@@ -18,9 +18,34 @@
 
 ## 效果与适用环境
 
-在 QQ 聊天中，缩略预览显示封面，查看原图时显示隐藏图片。
+在手机 QQ 聊天中，缩略预览显示封面，查看原图时显示隐藏图片。
 
-**作者已在 QQ 聊天环境实测通过。** 具体 QQ 客户端版本与操作系统组合尚未记录；其他版本及其他平台的表现取决于图片解码和转码方式。
+**Python 版生成的图片已由作者在手机 QQ 实测通过。** 电脑 QQ 从本地发送时会直接显示隐藏图，原参考样图也有相同行为；原消息或转发消息保留封面不代表本地发送也可用。C++ 版使用相同 APNG 结构，客户端效果需要单独实测。具体 QQ 版本组合尚未记录。
+
+## 两种版本
+
+| 版本 | 下载文件 | 实现 |
+| --- | --- | --- |
+| C++ 原生版 | `QQ-APNG-Disguise-CPP.exe` | C++17 / Win32 / Windows Imaging Component，无 Python、Qt 或额外运行库安装要求 |
+| Python 版 | `QQ-APNG-Disguise.exe` | Python / Pillow / Tkinter，发行包已包含运行环境 |
+
+C++ 版提供相同的拖入图片、浏览选择、路径规范化、防覆盖和双帧生成操作。支持系统 WIC 可解码的 PNG、JPEG、BMP、GIF、TIFF；WebP 取决于系统是否安装对应编解码器。封面使用 WIC 等比例缩放；隐藏图保留解码后的分辨率和像素。两种版本的缩放算法和压缩结果不保证字节一致。
+
+### 编译 C++ 原生版
+
+使用 Windows x64 的 MinGW-w64 工具链（例如 [w64devkit](https://github.com/skeeto/w64devkit)）：
+
+```powershell
+./cpp/build.ps1 -Toolchain "C:\tools\w64devkit\bin"
+```
+
+源码为 `cpp/main.cpp`，图标沿用 `assets/icon.ico`。输出为 `dist/QQ-APNG-Disguise-CPP.exe`。编译及运行均不需要 Python。
+
+也可以从命令行生成图片：
+
+```powershell
+./dist/QQ-APNG-Disguise-CPP.exe "封面.png" "隐藏图.png" "结果.png"
+```
 
 ## 功能
 
