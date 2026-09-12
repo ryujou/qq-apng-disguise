@@ -165,10 +165,11 @@ static void chunk(Bytes& out, const char* type, const Bytes& data) {
     }
     add32(out, crc ^ 0xffffffff);
 }
-static void control(Bytes& out, uint32_t& sequence, UINT w, UINT h, BYTE blend, unsigned delayMs) {
+static void control(Bytes& out, uint32_t& sequence, UINT w, UINT h, BYTE blend, unsigned delayMs, unsigned denominator = 1000) {
     Bytes data;
     for (uint32_t n : {sequence++, w, h, 0u, 0u}) add32(data, n);
-    data.insert(data.end(), {BYTE(delayMs >> 8), BYTE(delayMs), 3, 232, 0, blend});
+    if (denominator == 1000 && delayMs % 10 == 0) { delayMs /= 10; denominator = 100; }
+    data.insert(data.end(), {BYTE(delayMs >> 8), BYTE(delayMs), BYTE(denominator >> 8), BYTE(denominator), 0, blend});
     chunk(out, "fcTL", data);
 }
 static void frameData(Bytes& out, uint32_t& sequence, const Bytes& png) {
@@ -191,20 +192,36 @@ static void generate(const std::wstring& coverPath, const std::vector<std::wstri
     add32(header, hidden.width); add32(header, hidden.height);
     header.insert(header.end(), {8, 6, 0, 0, 0});
     chunk(out, "IHDR", header);
-    Bytes animation; add32(animation, static_cast<uint32_t>(std::max(size_t(2), hiddenPaths.size()))); add32(animation, 0);
+    unsigned slices = (delayMs + 99) / 100;
+    bool splitSingle = hiddenPaths.size() == 1 && slices == 1;
+    uint64_t count = uint64_t(hiddenPaths.size()) * (splitSingle ? 2 : slices);
+    if (count > UINT_MAX) throw std::runtime_error("Too many animation frames.");
+    Bytes animation; add32(animation, static_cast<uint32_t>(count)); add32(animation, 0);
     chunk(out, "acTL", animation);
+    std::string marker = "ChatBarApngDisguise";
+    marker.push_back('\0');
+    marker += hiddenPaths.size() > 1 ? "1;ANIMATED;" + std::to_string(count) : "1;STATIC;1";
+    chunk(out, "tEXt", Bytes(marker.begin(), marker.end()));
     chunk(out, "IDAT", pngData(factory.p, cover));
     uint32_t sequence = 0;
-    control(out, sequence, hidden.width, hidden.height, 0, delayMs);
-    frameData(out, sequence, pngData(factory.p, hidden));
-    for (size_t i = 1; i < hiddenPaths.size(); ++i) {
-        auto next = fit(factory.p, load(factory.p, hiddenPaths[i]), hidden.width, hidden.height);
-        control(out, sequence, hidden.width, hidden.height, 0, delayMs);
-        frameData(out, sequence, pngData(factory.p, next));
-    }
-    if (hiddenPaths.size() == 1) {
-        control(out, sequence, 1, 1, 1, delayMs);
-        frameData(out, sequence, pngData(factory.p, Image{1, 1, Bytes(4, 0)}));
+    for (size_t i = 0; i < hiddenPaths.size(); ++i) {
+        auto image = i == 0 ? hidden : fit(factory.p, load(factory.p, hiddenPaths[i]), hidden.width, hidden.height);
+        // Rewriting the same top-left BGRA pixel holds the displayed image without storing it again.
+        auto hold = pngData(factory.p, Image{1, 1, Bytes(image.pixels.begin(), image.pixels.begin() + 4)});
+        unsigned first = splitSingle ? delayMs : std::min(100u, delayMs);
+        control(out, sequence, hidden.width, hidden.height, 0, first, splitSingle ? 2000 : 1000);
+        frameData(out, sequence, pngData(factory.p, image));
+        if (splitSingle) {
+            control(out, sequence, 1, 1, 0, delayMs, 2000);
+            frameData(out, sequence, hold);
+        } else {
+            for (unsigned remaining = delayMs - first; remaining > 0;) {
+                unsigned duration = std::min(100u, remaining);
+                control(out, sequence, 1, 1, 0, duration);
+                frameData(out, sequence, hold);
+                remaining -= duration;
+            }
+        }
     }
     chunk(out, "IEND", {});
     if (out.size() > MAXDWORD) throw std::runtime_error("Output file is too large.");
