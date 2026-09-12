@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="在浏览器本地为图片、GIF 和 APNG 制作独立封面，支持多图循环和自定义播放时长。">
+  <title>藏图工坊 · GIF / APNG 封面工具</title>
+  <link rel="icon" href="icon.png"><link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><symbol id="picture" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="15.5" cy="8.5" r="1.5"/><path d="m3 17 5-6 5 5 3-3 5 5"/></symbol><symbol id="download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></symbol></svg>
+  <header><a class="brand" href="./"><img src="icon.png" width="44" height="44" alt="">藏图工坊</a><nav aria-label="项目链接"><a href="https://github.com/ryujou/qq-apng-disguise">GitHub <span aria-hidden="true">↗</span></a><span class="nav-line"></span><a href="https://github.com/ryujou/qq-apng-disguise/releases/latest"><svg><use href="#download"/></svg>下载桌面版</a></nav></header>
+  <main>
+    <section class="intro"><h1>一张封面，藏起整段动画。</h1><p>拖入图片或 GIF / APNG，在浏览器里完成制作。</p></section>
+    <div class="workspace">
+      <fieldset id="editor" class="editor panel">
+        <section><div class="section-title"><span class="step">01</span><div><h2>封面图片</h2><p>将作为静态封面显示，动画播放时展示隐藏内容。</p></div></div>
+          <input type="file" id="cover" accept="image/*,.apng" hidden>
+          <button type="button" id="cover-drop" class="drop cover-drop"><svg class="image-icon"><use href="#picture"/></svg><img id="cover-thumb" hidden alt="已选择的封面"><strong id="cover-label">点击选择图片或拖入</strong><span>支持 JPG、PNG、WebP 等常见格式</span></button>
+        </section>
+        <div class="divider"></div>
+        <section><div class="section-title"><span class="step">02</span><div><h2>播放内容</h2><p>导入图片或 GIF / APNG，按导入顺序进行播放。</p></div></div>
+          <input type="file" id="playback" multiple accept="image/*,.apng" hidden>
+          <button type="button" id="playback-drop" class="drop playback-drop"><span class="plus" aria-hidden="true">＋</span><strong>添加图片或 GIF / APNG</strong><span>支持多选与拖入，保留动图的完整画面</span></button>
+          <ol id="file-list" aria-label="播放文件列表"></ol>
+        </section>
+        <div class="settings"><label for="delay">静态图片时长<div class="number-input"><input id="delay" type="number" min="1" max="65535" step="1" value="100" required><span>ms</span></div></label><div class="timing"><label><input id="preserve" type="checkbox" checked>保留动图原始时长</label><p>取消勾选后，每帧使用左侧设置的时长。</p></div></div>
+      </fieldset>
+      <aside class="preview panel"><h2>预览</h2><p>生成后在此预览动画效果。</p><div class="preview-canvas"><div id="preview-empty"><svg><use href="#picture"/></svg><span>生成后预览动画</span></div><img id="result-preview" hidden alt="生成的动画预览"></div><button id="generate" class="primary" type="button"><svg><use href="#download"/></svg><span>生成并下载 PNG</span></button><a id="save-result" hidden download="藏图.png">再次下载生成的 PNG</a><p id="status" class="status" role="status" aria-live="polite">图片仅在当前浏览器处理。</p></aside>
+    </div>
+    <section class="qq-note"><span class="info" aria-hidden="true">!</span><strong>QQ 发送方式</strong><p>先发送到手机，再在手机 QQ 中勾选「原图」发送。</p></section>
+    <footer>开源 · 本地处理 · 无需安装 <a href="licenses.txt">第三方许可</a></footer>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
