@@ -1,0 +1,16 @@
+{
+  "name": "qq-apng-disguise-web",
+  "private": true,
+  "version": "1.3.0",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "gifuct-js": "2.1.2",
+    "upng-js": "2.1.0",
+    "pako": "2.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.0"
+  }
+}

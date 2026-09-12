@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -165,6 +167,8 @@ static void chunk(Bytes& out, const char* type, const Bytes& data) {
     }
     add32(out, crc ^ 0xffffffff);
 }
+#include "animation.h"
+
 static void control(Bytes& out, uint32_t& sequence, UINT w, UINT h, BYTE blend, unsigned delayMs, unsigned denominator = 1000) {
     Bytes data;
     for (uint32_t n : {sequence++, w, h, 0u, 0u}) add32(data, n);
@@ -180,47 +184,54 @@ static void frameData(Bytes& out, uint32_t& sequence, const Bytes& png) {
         chunk(out, "fdAT", data);
     }
 }
-static void generate(const std::wstring& coverPath, const std::vector<std::wstring>& hiddenPaths, const std::wstring& outputPath, unsigned delayMs = 100) {
+static void generate(const std::wstring& coverPath, const std::vector<std::wstring>& hiddenPaths, const std::wstring& outputPath, unsigned delayMs = 100, bool preserveTiming = true) {
     if (_wcsicmp(fs::path(outputPath).extension().c_str(), L".png") != 0)
         throw std::runtime_error("Output filename must end in .png.");
     Com<IWICImagingFactory> factory;
     check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory, reinterpret_cast<void**>(factory.put())));
     if (hiddenPaths.empty()) throw std::runtime_error("Add at least one playback image.");
-    auto hidden = load(factory.p, hiddenPaths.front());
+    std::vector<PlaybackFrame> playback;
+    for (auto& path : hiddenPaths) {
+        auto imported = loadPlayback(factory.p, path, delayMs, preserveTiming);
+        for (auto& frame : imported) playback.push_back(std::move(frame));
+    }
+    auto& hidden = playback.front().image;
     auto cover = fit(factory.p, load(factory.p, coverPath), hidden.width, hidden.height);
     Bytes out{137, 80, 78, 71, 13, 10, 26, 10}, header;
     add32(header, hidden.width); add32(header, hidden.height);
     header.insert(header.end(), {8, 6, 0, 0, 0});
     chunk(out, "IHDR", header);
-    unsigned slices = (delayMs + 99) / 100;
-    bool splitSingle = hiddenPaths.size() == 1 && slices == 1;
-    uint64_t count = uint64_t(hiddenPaths.size()) * (splitSingle ? 2 : slices);
+    uint64_t count = 0;
+    for (auto& f : playback) {
+        if (f.denominator < 10) { f.denominator *= 10; f.ticks *= 10; }
+        unsigned step = std::max(1u, f.denominator / 10);
+        count += (uint64_t(f.ticks) + step - 1) / step;
+    }
+    bool splitSingle = count == 1 && (playback[0].ticks > 1 || playback[0].denominator <= 32767);
+    if (splitSingle) count = 2;
     if (count > UINT_MAX) throw std::runtime_error("Too many animation frames.");
     Bytes animation; add32(animation, static_cast<uint32_t>(count)); add32(animation, 0);
     chunk(out, "acTL", animation);
     std::string marker = "ChatBarApngDisguise";
     marker.push_back('\0');
-    marker += hiddenPaths.size() > 1 ? "1;ANIMATED;" + std::to_string(count) : "1;STATIC;1";
+    marker += playback.size() > 1 ? "1;ANIMATED;" + std::to_string(count) : "1;STATIC;1";
     chunk(out, "tEXt", Bytes(marker.begin(), marker.end()));
     chunk(out, "IDAT", pngData(factory.p, cover));
     uint32_t sequence = 0;
-    for (size_t i = 0; i < hiddenPaths.size(); ++i) {
-        auto image = i == 0 ? hidden : fit(factory.p, load(factory.p, hiddenPaths[i]), hidden.width, hidden.height);
-        // Rewriting the same top-left BGRA pixel holds the displayed image without storing it again.
+    for (auto& f : playback) {
+        auto image = fit(factory.p, f.image, hidden.width, hidden.height);
         auto hold = pngData(factory.p, Image{1, 1, Bytes(image.pixels.begin(), image.pixels.begin() + 4)});
-        unsigned first = splitSingle ? delayMs : std::min(100u, delayMs);
-        control(out, sequence, hidden.width, hidden.height, 0, first, splitSingle ? 2000 : 1000);
+        unsigned ticks = f.ticks, denominator = f.denominator;
+        if (splitSingle && ticks == 1) { ticks *= 2; denominator *= 2; }
+        unsigned step = splitSingle ? ticks / 2 : std::max(1u, denominator / 10);
+        unsigned first = std::min(step, ticks);
+        control(out, sequence, hidden.width, hidden.height, 0, first, denominator);
         frameData(out, sequence, pngData(factory.p, image));
-        if (splitSingle) {
-            control(out, sequence, 1, 1, 0, delayMs, 2000);
+        for (unsigned remaining = ticks - first; remaining > 0;) {
+            unsigned duration = splitSingle ? remaining : std::min(step, remaining);
+            control(out, sequence, 1, 1, 0, duration, denominator);
             frameData(out, sequence, hold);
-        } else {
-            for (unsigned remaining = delayMs - first; remaining > 0;) {
-                unsigned duration = std::min(100u, remaining);
-                control(out, sequence, 1, 1, 0, duration);
-                frameData(out, sequence, hold);
-                remaining -= duration;
-            }
+            remaining -= duration;
         }
     }
     chunk(out, "IEND", {});
@@ -245,7 +256,7 @@ static unsigned parseDelay(const std::wstring& value) {
     return delay;
 }
 
-static HWND inputs[3], statusLabel, durationInput;
+static HWND inputs[3], statusLabel, durationInput, preserveInput;
 static std::vector<std::wstring> playbackPaths;
 static HFONT font, heading;
 static HINSTANCE instance;
@@ -297,7 +308,7 @@ static void browse(HWND owner, int index) {
     std::vector<wchar_t> path(32768);
     OPENFILENAMEW dialog{sizeof(dialog)};
     dialog.hwndOwner = owner; dialog.lpstrFile = path.data(); dialog.nMaxFile = static_cast<DWORD>(path.size());
-    dialog.lpstrFilter = index == 2 ? L"PNG 图片\0*.png\0\0" : L"图片文件\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp\0所有文件\0*.*\0\0";
+    dialog.lpstrFilter = index == 2 ? L"PNG 图片\0*.png\0\0" : L"图片文件\0*.png;*.apng;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp\0所有文件\0*.*\0\0";
     dialog.lpstrDefExt = L"png";
     dialog.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (index == 2 ? 0 : OFN_FILEMUSTEXIST) | (index == 1 ? OFN_ALLOWMULTISELECT : 0);
     if ((index == 2 ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) {
@@ -323,7 +334,7 @@ static LRESULT CALLBACK windowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp) 
     if (msg == WM_CREATE) {
         auto title = control(window, L"STATIC", L"APNG 藏图工具 · C++", 0, 0, 24, 20, 600, 40);
         SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(heading), TRUE);
-        control(window, L"STATIC", L"拖入封面；播放列表支持批量拖入或添加多张图片。", 0, 0, 24, 70, 710, 28);
+        control(window, L"STATIC", L"拖入封面；播放列表支持图片、GIF 和 APNG 动画。", 0, 0, 24, 70, 710, 28);
         const wchar_t* labels[] = {L"封面图", L"播放图", L"保存到"};
         for (int i = 0; i < 3; ++i) {
             int y = i == 0 ? 116 : (i == 1 ? 166 : 330);
@@ -340,12 +351,14 @@ static LRESULT CALLBACK windowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp) 
             control(window, L"BUTTON", i == 1 ? L"添加图片" : L"浏览…", WS_TABSTOP | BS_PUSHBUTTON, 100 + i, 625, y, 100, 32);
         }
         control(window, L"BUTTON", L"移除选中", WS_TABSTOP | BS_PUSHBUTTON, 103, 625, 210, 100, 32);
-        control(window, L"STATIC", L"每张时长", 0, 0, 24, 385, 76, 24);
+        control(window, L"STATIC", L"图片时长", 0, 0, 24, 385, 76, 24);
         durationInput = control(window, L"EDIT", L"100", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, 203, 110, 380, 110, 32);
         SendMessageW(durationInput, EM_SETLIMITTEXT, 5, 0);
         control(window, L"STATIC", L"毫秒（1–65535；1000 毫秒 = 1 秒）", 0, 0, 235, 385, 450, 24);
-        control(window, L"BUTTON", L"生成藏图", WS_TABSTOP | BS_DEFPUSHBUTTON, 110, 290, 435, 170, 38);
-        statusLabel = control(window, L"STATIC", L"按列表顺序循环播放；画布采用第一张播放图尺寸。", 0, 0, 24, 495, 710, 28);
+        preserveInput = control(window, L"BUTTON", L"保留 GIF / APNG 原始帧时长", WS_TABSTOP | BS_AUTOCHECKBOX, 204, 100, 425, 470, 30);
+        SendMessageW(preserveInput, BM_SETCHECK, BST_CHECKED, 0);
+        control(window, L"BUTTON", L"生成藏图", WS_TABSTOP | BS_DEFPUSHBUTTON, 110, 290, 470, 170, 38);
+        statusLabel = control(window, L"STATIC", L"按列表顺序循环播放；画布采用第一张播放图尺寸。", 0, 0, 24, 530, 710, 28);
         return 0;
     }
     if (msg == WM_COMMAND) {
@@ -373,7 +386,7 @@ static LRESULT CALLBACK windowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp) 
             }
             SetWindowTextW(statusLabel, L"正在生成，请稍候…"); UpdateWindow(window); SetCursor(LoadCursorW(nullptr, IDC_WAIT));
             try {
-                generate(paths[0], playbackPaths, paths[2], delayMs);
+                generate(paths[0], playbackPaths, paths[2], delayMs, SendMessageW(preserveInput, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 SetWindowTextW(statusLabel, L"生成完成。");
                 MessageBoxW(window, (L"已保存到：\n" + paths[2]).c_str(), L"生成完成", MB_OK | MB_ICONINFORMATION);
             } catch (const std::exception& e) {
@@ -418,7 +431,7 @@ int WINAPI wWinMain(HINSTANCE module, HINSTANCE, PWSTR, int show) {
     cls.hIcon = LoadIconW(module, MAKEINTRESOURCEW(1)); cls.hIconSm = cls.hIcon;
     RegisterClassExW(&cls);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT size{0, 0, px(750), px(540)}; AdjustWindowRect(&size, style, FALSE);
+    RECT size{0, 0, px(750), px(575)}; AdjustWindowRect(&size, style, FALSE);
     HWND window = CreateWindowExW(0, cls.lpszClassName, L"APNG 藏图工具 · C++", style, CW_USEDEFAULT, CW_USEDEFAULT,
         size.right - size.left, size.bottom - size.top, nullptr, nullptr, module, nullptr);
     if (!window) { DeleteObject(font); DeleteObject(heading); CoUninitialize(); return 1; }

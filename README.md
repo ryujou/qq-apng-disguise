@@ -4,7 +4,7 @@
 
 <h1 align="center">QQ APNG 藏图工具</h1>
 
-<p align="center">一张封面，一张隐藏图。拖入图片，生成适用于 QQ 聊天环境的 APNG。</p>
+<p align="center">一张封面，藏起整段动画。导入图片、GIF 或 APNG，生成适用于 QQ 聊天环境的藏图。</p>
 
 <p align="center">
   <a href="https://github.com/ryujou/qq-apng-disguise/releases/latest"><img src="https://img.shields.io/github/v/release/ryujou/qq-apng-disguise?label=download" alt="下载"></a>
@@ -12,9 +12,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
 </p>
 
-<p align="center"><a href="https://github.com/ryujou/qq-apng-disguise/releases/latest">下载 Windows EXE</a> · <a href="#使用方法">使用方法</a> · <a href="#运行源码">运行源码</a></p>
+<p align="center"><a href="https://ryujou.github.io/qq-apng-disguise/">在线使用</a> · <a href="https://github.com/ryujou/qq-apng-disguise/releases/latest">下载 Windows EXE</a> · <a href="#使用方法">使用方法</a> · <a href="#运行源码">运行源码</a></p>
 
-![工具界面](assets/screenshot.png)
+![Web 版界面](assets/screenshot-web.png)
 
 ## 效果与适用环境
 
@@ -24,14 +24,19 @@
 
 **Python 版生成的图片已由作者在手机 QQ 实测通过。** 电脑 QQ 从本地发送时会直接显示隐藏图，原参考样图也有相同行为；原消息或转发消息保留封面不代表本地发送也可用。C++ 版使用相同 APNG 结构，客户端效果需要单独实测。具体 QQ 版本组合尚未记录。
 
-## 两种版本
+## 版本
 
 | 版本 | 下载文件 | 实现 |
 | --- | --- | --- |
+| Web 版 | [打开网页](https://ryujou.github.io/qq-apng-disguise/) | 在浏览器本地处理，支持电脑和手机，无需安装 |
 | C++ 原生版 | `QQ-APNG-Disguise-CPP.exe` | C++17 / Win32 / Windows Imaging Component，无 Python、Qt 或额外运行库安装要求 |
 | Python 版 | `QQ-APNG-Disguise.exe` | Python / Pillow / Tkinter，发行包已包含运行环境 |
 
-C++ 版支持独立封面与多图循环播放，可批量拖入或选择播放图片，并移除选中项；保留路径规范化和防覆盖。图片按列表顺序播放，每张时长可设为 1–65535 ms（默认 100 ms），画布采用第一张播放图的尺寸，其他图片等比例适配并居中留白。每张画面使用完整帧加 1×1 同色小帧延时；单图保留至少两帧，总时长仍等于设定值。支持系统 WIC 可解码的 PNG、JPEG、BMP、GIF、TIFF；WebP 取决于系统是否安装对应编解码器。封面使用 WIC 等比例缩放；隐藏图保留解码后的分辨率和像素。两种版本的缩放算法和压缩结果不保证字节一致。
+C++ 和 Web 版支持独立封面、静态图片与 GIF／APNG 混合导入，按列表顺序循环播放，可批量选择或拖入文件并移除条目。GIF 的局部更新、透明叠加和恢复画面，以及 APNG 的混合与清除规则均会先合成为完整画面；APNG 的独立默认封面不参与播放。
+
+默认保留动图各帧的原始时长。静态图片使用「图片时长」，范围 1–65535 ms，默认 100 ms；取消「保留动图原始时长」后，导入动画的每帧也统一使用这个时长。文件中的零时长按 100 ms 处理。画布采用第一项播放内容的尺寸，其余图片等比例适配、居中留白。
+
+C++ 版通过 WIC 读取 PNG、JPEG、BMP、GIF、TIFF，WebP 取决于系统编解码器；Web 版支持 PNG、GIF、APNG，以及浏览器可读取的 JPEG、WebP 等静态图片。网页不上传图片，解码后的播放画面总量限制为 512 MB，过大时需减少帧数或缩小分辨率。
 
 ![C++ 多图播放界面](assets/screenshot-cpp.png)
 
@@ -43,13 +48,26 @@ C++ 版支持独立封面与多图循环播放，可批量拖入或选择播放�
 ./cpp/build.ps1 -Toolchain "C:\tools\w64devkit\bin"
 ```
 
-源码为 `cpp/main.cpp`，图标沿用 `assets/icon.ico`。输出为 `dist/QQ-APNG-Disguise-CPP.exe`。编译及运行均不需要 Python。
+源码为 `cpp/main.cpp` 和 `cpp/animation.h`，图标沿用 `assets/icon.ico`。输出为 `dist/QQ-APNG-Disguise-CPP.exe`。编译及运行均不需要 Python。
 
 也可以从命令行生成图片：
 
 ```powershell
-./dist/QQ-APNG-Disguise-CPP.exe --delay-ms 1000 "封面.png" "播放图1.png" "播放图2.png" "播放图3.png" "结果.png"
+./dist/QQ-APNG-Disguise-CPP.exe --delay-ms 1000 "封面.png" "播放图1.png" "动画.gif" "动画.apng" "结果.png"
 ```
+
+命令行的 `--delay-ms` 设置静态图片时长，GIF／APNG 保留原始帧时长。
+
+### 构建 Web 版
+
+```powershell
+cd web
+npm ci
+npm run build
+python -m http.server 8080 --directory dist
+```
+
+浏览器打开 `http://localhost:8080`。`web/dist` 是完整静态站点，当前 GitHub Pages 使用 `gh-pages` 分支根目录中的构建产物。
 
 ## 功能
 
@@ -61,9 +79,9 @@ C++ 版支持独立封面与多图循环播放，可批量拖入或选择播放�
 
 ## 使用方法
 
-1. 从 [Releases](https://github.com/ryujou/qq-apng-disguise/releases/latest) 下载 `QQ-APNG-Disguise.exe`，双击运行。
-2. C++ 版：拖入一张封面，将多张图片拖入「播放图」列表，或点击「添加图片」批量选择；按列表顺序播放，可用「移除选中」删除一项。Python 版：分别选择一张封面图和一张隐藏图。
-3. 选择保存位置；C++ 版可填写「每张时长」，单位为毫秒，例如 1000 表示每张播放 1 秒。点击「生成藏图」。
+1. 打开 [Web 版](https://ryujou.github.io/qq-apng-disguise/)，或从 [Releases](https://github.com/ryujou/qq-apng-disguise/releases/latest) 下载 `QQ-APNG-Disguise-CPP.exe`。
+2. 选择一张封面，再添加图片、GIF 或 APNG 作为播放内容，可批量选择或拖入。Python 版仅支持一张隐藏图。
+3. 设置图片时长，例如 1000 表示 1 秒。动图默认使用原始帧时长，需要统一调整时取消保留选项。C++ 版选择保存位置后生成；Web 版点击「生成并下载 PNG」，也可再次点击下载链接保存。
 4. 先将生成的 PNG 发送到手机，保留完整的原始文件。
 5. 在手机 QQ 中选择该图片，**勾选「原图」后发送**，才有藏图效果。
 6. 在聊天中检查封面预览，再打开原图确认隐藏图片或多图动画。
@@ -89,7 +107,7 @@ python apng_disguise.py
 python apng_disguise.py "封面.png" "隐藏图.png" "结果.png"
 ```
 
-输入动画图片时读取其默认画面。输出路径必须使用 `.png`，且文件尚不存在。
+Python 版输入动画图片时只读取其默认画面。输出路径必须使用 `.png`，且文件尚不存在。
 
 ## 打包 EXE
 
@@ -104,7 +122,7 @@ python -m pip install -r requirements-build.txt
 
 ## 工作原理
 
-输出是一个带独立静态封面的 APNG 文件。C++ 版按每张图所设时长拆帧：先显示完整画面，后续每次只重写左上角的同色 1×1 像素，保留其余画面。每帧最长 100 ms，最后一帧使用剩余时长。
+输出是一个带独立静态封面的 APNG 文件。C++ 和 Web 版按每张图的时长拆帧：先显示完整画面，后续每次只重写左上角的同色 1×1 像素，保留其余画面。每帧最长 100 ms，最后一帧使用剩余时长。
 
 例如，500 ms = 完整帧 100 ms + 四个同色小帧各 100 ms；250 ms = 100 + 100 + 50 ms。单图且时长不超过 100 ms 时，将总时长均分给完整帧和小帧，保持至少两帧。全部动画帧使用保留画布、替换局部像素的方式（dispose=0、blend=0）。封面不参与循环。
 
