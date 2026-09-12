@@ -179,25 +179,33 @@ static void frameData(Bytes& out, uint32_t& sequence, const Bytes& png) {
         chunk(out, "fdAT", data);
     }
 }
-static void generate(const std::wstring& coverPath, const std::wstring& hiddenPath, const std::wstring& outputPath) {
+static void generate(const std::wstring& coverPath, const std::vector<std::wstring>& hiddenPaths, const std::wstring& outputPath) {
     if (_wcsicmp(fs::path(outputPath).extension().c_str(), L".png") != 0)
         throw std::runtime_error("Output filename must end in .png.");
     Com<IWICImagingFactory> factory;
     check(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_IWICImagingFactory, reinterpret_cast<void**>(factory.put())));
-    auto hidden = load(factory.p, hiddenPath);
+    if (hiddenPaths.empty()) throw std::runtime_error("Add at least one playback image.");
+    auto hidden = load(factory.p, hiddenPaths.front());
     auto cover = fit(factory.p, load(factory.p, coverPath), hidden.width, hidden.height);
     Bytes out{137, 80, 78, 71, 13, 10, 26, 10}, header;
     add32(header, hidden.width); add32(header, hidden.height);
     header.insert(header.end(), {8, 6, 0, 0, 0});
     chunk(out, "IHDR", header);
-    Bytes animation; add32(animation, 2); add32(animation, 0);
+    Bytes animation; add32(animation, static_cast<uint32_t>(std::max(size_t(2), hiddenPaths.size()))); add32(animation, 0);
     chunk(out, "acTL", animation);
     chunk(out, "IDAT", pngData(factory.p, cover));
     uint32_t sequence = 0;
     control(out, sequence, hidden.width, hidden.height, 0);
     frameData(out, sequence, pngData(factory.p, hidden));
-    control(out, sequence, 1, 1, 1);
-    frameData(out, sequence, pngData(factory.p, Image{1, 1, Bytes(4, 0)}));
+    for (size_t i = 1; i < hiddenPaths.size(); ++i) {
+        auto next = fit(factory.p, load(factory.p, hiddenPaths[i]), hidden.width, hidden.height);
+        control(out, sequence, hidden.width, hidden.height, 0);
+        frameData(out, sequence, pngData(factory.p, next));
+    }
+    if (hiddenPaths.size() == 1) {
+        control(out, sequence, 1, 1, 1);
+        frameData(out, sequence, pngData(factory.p, Image{1, 1, Bytes(4, 0)}));
+    }
     chunk(out, "IEND", {});
     if (out.size() > MAXDWORD) throw std::runtime_error("Output file is too large.");
     HANDLE file = CreateFileW(outputPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -213,6 +221,7 @@ static void generate(const std::wstring& coverPath, const std::wstring& hiddenPa
 }
 
 static HWND inputs[3], statusLabel;
+static std::vector<std::wstring> playbackPaths;
 static HFONT font, heading;
 static HINSTANCE instance;
 static int dpi = 96;
@@ -229,6 +238,11 @@ static std::wstring normalize(std::wstring path) {
     return fs::path(path.substr(first, last - first + 1)).make_preferred().wstring();
 }
 static void setPath(int index, const std::wstring& path) {
+    if (index == 1) {
+        playbackPaths.push_back(normalize(path));
+        SendMessageW(inputs[1], LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(playbackPaths.back().c_str()));
+        return;
+    }
     SetWindowTextW(inputs[index], normalize(path).c_str());
     if (index == 0 && text(inputs[2]).empty()) {
         fs::path cover(normalize(path));
@@ -238,14 +252,17 @@ static void setPath(int index, const std::wstring& path) {
 static LRESULT CALLBACK dropProc(HWND window, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR index, DWORD_PTR) {
     if (msg == WM_DROPFILES) {
         HDROP drop = reinterpret_cast<HDROP>(wp);
-        if (DragQueryFileW(drop, 0xffffffff, nullptr, 0) == 1) {
-            std::wstring path(DragQueryFileW(drop, 0, nullptr, 0) + 1, L'\0');
-            DragQueryFileW(drop, 0, path.data(), static_cast<UINT>(path.size()));
+        UINT count = DragQueryFileW(drop, 0xffffffff, nullptr, 0);
+        if (index == 1 || count == 1) {
+          for (UINT i = 0; i < count; ++i) {
+            std::wstring path(DragQueryFileW(drop, i, nullptr, 0) + 1, L'\0');
+            DragQueryFileW(drop, i, path.data(), static_cast<UINT>(path.size()));
             path.resize(wcslen(path.c_str()));
             DWORD attr = GetFileAttributesW(path.c_str());
             if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) setPath(static_cast<int>(index), path);
             else MessageBoxW(GetParent(window), L"请拖入图片文件。", L"拖入图片", MB_OK | MB_ICONERROR);
-        } else MessageBoxW(GetParent(window), L"请一次拖入一个图片文件。", L"拖入图片", MB_OK | MB_ICONERROR);
+          }
+        } else MessageBoxW(GetParent(window), L"封面请一次拖入一个图片文件。", L"拖入图片", MB_OK | MB_ICONERROR);
         DragFinish(drop);
         return 0;
     }
@@ -257,8 +274,15 @@ static void browse(HWND owner, int index) {
     dialog.hwndOwner = owner; dialog.lpstrFile = path.data(); dialog.nMaxFile = static_cast<DWORD>(path.size());
     dialog.lpstrFilter = index == 2 ? L"PNG 图片\0*.png\0\0" : L"图片文件\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp\0所有文件\0*.*\0\0";
     dialog.lpstrDefExt = L"png";
-    dialog.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (index == 2 ? 0 : OFN_FILEMUSTEXIST);
-    if ((index == 2 ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) setPath(index, path.data());
+    dialog.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST | (index == 2 ? 0 : OFN_FILEMUSTEXIST) | (index == 1 ? OFN_ALLOWMULTISELECT : 0);
+    if ((index == 2 ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog))) {
+        const wchar_t* next = path.data() + wcslen(path.data()) + 1;
+        if (index == 1 && *next) {
+            for (; *next; next += wcslen(next) + 1) setPath(1, (fs::path(path.data()) / next).wstring());
+        } else setPath(index, path.data());
+    } else if (CommDlgExtendedError()) {
+        MessageBoxW(owner, L"无法完成文件选择，请减少一次选择的文件数量后重试。", L"文件选择失败", MB_OK | MB_ICONERROR);
+    }
 }
 static HWND control(HWND parent, const wchar_t* cls, const wchar_t* label, DWORD style, int id, int x, int y, int w, int h) {
     HWND c = CreateWindowExW(wcscmp(cls, L"EDIT") == 0 ? WS_EX_CLIENTEDGE : 0, cls, label, WS_CHILD | WS_VISIBLE | style,
@@ -274,31 +298,47 @@ static LRESULT CALLBACK windowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp) 
     if (msg == WM_CREATE) {
         auto title = control(window, L"STATIC", L"APNG 藏图工具 · C++", 0, 0, 24, 20, 600, 40);
         SendMessageW(title, WM_SETFONT, reinterpret_cast<WPARAM>(heading), TRUE);
-        control(window, L"STATIC", L"将图片拖入对应输入框，或点击浏览。所有图片均在本地处理。", 0, 0, 24, 70, 710, 28);
-        const wchar_t* labels[] = {L"封面图", L"隐藏图", L"保存到"};
+        control(window, L"STATIC", L"拖入封面；播放列表支持批量拖入或添加多张图片。", 0, 0, 24, 70, 710, 28);
+        const wchar_t* labels[] = {L"封面图", L"播放图", L"保存到"};
         for (int i = 0; i < 3; ++i) {
-            control(window, L"STATIC", labels[i], 0, 0, 24, 121 + i * 48, 64, 24);
-            inputs[i] = control(window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 200 + i, 100, 116 + i * 48, 510, 32);
-            SendMessageW(inputs[i], EM_SETLIMITTEXT, 32767, 0);
+            int y = i == 0 ? 116 : (i == 1 ? 166 : 330);
+            control(window, L"STATIC", labels[i], 0, 0, 24, y + 5, 64, 24);
+            if (i == 1) {
+                inputs[i] = control(window, L"LISTBOX", L"", WS_TABSTOP | WS_BORDER | WS_VSCROLL | WS_HSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                    201, 100, y, 510, 145);
+                SendMessageW(inputs[i], LB_SETHORIZONTALEXTENT, px(1800), 0);
+            } else {
+                inputs[i] = control(window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 200 + i, 100, y, 510, 32);
+                SendMessageW(inputs[i], EM_SETLIMITTEXT, 32767, 0);
+            }
             if (i < 2) { SetWindowSubclass(inputs[i], dropProc, i, 0); DragAcceptFiles(inputs[i], TRUE); }
-            control(window, L"BUTTON", L"浏览…", WS_TABSTOP | BS_PUSHBUTTON, 100 + i, 625, 116 + i * 48, 100, 32);
+            control(window, L"BUTTON", i == 1 ? L"添加图片" : L"浏览…", WS_TABSTOP | BS_PUSHBUTTON, 100 + i, 625, y, 100, 32);
         }
-        control(window, L"BUTTON", L"生成藏图", WS_TABSTOP | BS_DEFPUSHBUTTON, 110, 290, 280, 170, 38);
-        statusLabel = control(window, L"STATIC", L"保留隐藏图原始分辨率；封面等比例适配，居中留白。", 0, 0, 24, 340, 710, 28);
+        control(window, L"BUTTON", L"移除选中", WS_TABSTOP | BS_PUSHBUTTON, 103, 625, 210, 100, 32);
+        control(window, L"BUTTON", L"生成藏图", WS_TABSTOP | BS_DEFPUSHBUTTON, 110, 290, 390, 170, 38);
+        statusLabel = control(window, L"STATIC", L"按列表顺序循环播放，每张 100 ms；画布采用第一张播放图尺寸。", 0, 0, 24, 448, 710, 28);
         return 0;
     }
     if (msg == WM_COMMAND) {
         int id = LOWORD(wp);
         if (id >= 100 && id <= 102) browse(window, id - 100);
+        if (id == 103) {
+            auto selected = SendMessageW(inputs[1], LB_GETCURSEL, 0, 0);
+            if (selected != LB_ERR) {
+                playbackPaths.erase(playbackPaths.begin() + selected);
+                SendMessageW(inputs[1], LB_DELETESTRING, selected, 0);
+                if (!playbackPaths.empty()) SendMessageW(inputs[1], LB_SETCURSEL, std::min(size_t(selected), playbackPaths.size() - 1), 0);
+            }
+        }
         if (id == 110) {
             std::wstring paths[3];
-            for (int i = 0; i < 3; ++i) { paths[i] = normalize(text(inputs[i])); SetWindowTextW(inputs[i], paths[i].c_str()); }
-            if (paths[0].empty() || paths[1].empty() || paths[2].empty()) {
-                MessageBoxW(window, L"请选择封面图、隐藏图和保存位置。", L"信息不完整", MB_OK | MB_ICONERROR); return 0;
+            for (int i : {0, 2}) { paths[i] = normalize(text(inputs[i])); SetWindowTextW(inputs[i], paths[i].c_str()); }
+            if (paths[0].empty() || playbackPaths.empty() || paths[2].empty()) {
+                MessageBoxW(window, L"请选择封面图、至少一张播放图和保存位置。", L"信息不完整", MB_OK | MB_ICONERROR); return 0;
             }
             SetWindowTextW(statusLabel, L"正在生成，请稍候…"); UpdateWindow(window); SetCursor(LoadCursorW(nullptr, IDC_WAIT));
             try {
-                generate(paths[0], paths[1], paths[2]);
+                generate(paths[0], playbackPaths, paths[2]);
                 SetWindowTextW(statusLabel, L"生成完成。");
                 MessageBoxW(window, (L"已保存到：\n" + paths[2]).c_str(), L"生成完成", MB_OK | MB_ICONINFORMATION);
             } catch (const std::exception& e) {
@@ -322,8 +362,8 @@ int WINAPI wWinMain(HINSTANCE module, HINSTANCE, PWSTR, int show) {
     if (argc != 1) {
         int code = 0;
         try {
-            if (argc != 4) throw std::runtime_error("Usage: QQ-APNG-Disguise-CPP.exe cover hidden output.png");
-            generate(argv[1], argv[2], argv[3]);
+            if (argc < 4) throw std::runtime_error("Usage: QQ-APNG-Disguise-CPP.exe cover frame1 [frame2 ...] output.png");
+            generate(argv[1], std::vector<std::wstring>(argv + 2, argv + argc - 1), argv[argc - 1]);
         } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); code = 1; }
         LocalFree(argv); CoUninitialize(); return code;
     }
@@ -340,7 +380,7 @@ int WINAPI wWinMain(HINSTANCE module, HINSTANCE, PWSTR, int show) {
     cls.hIcon = LoadIconW(module, MAKEINTRESOURCEW(1)); cls.hIconSm = cls.hIcon;
     RegisterClassExW(&cls);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT size{0, 0, px(750), px(390)}; AdjustWindowRect(&size, style, FALSE);
+    RECT size{0, 0, px(750), px(495)}; AdjustWindowRect(&size, style, FALSE);
     HWND window = CreateWindowExW(0, cls.lpszClassName, L"APNG 藏图工具 · C++", style, CW_USEDEFAULT, CW_USEDEFAULT,
         size.right - size.left, size.bottom - size.top, nullptr, nullptr, module, nullptr);
     if (!window) { DeleteObject(font); DeleteObject(heading); CoUninitialize(); return 1; }
