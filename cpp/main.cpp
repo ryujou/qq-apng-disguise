@@ -165,10 +165,10 @@ static void chunk(Bytes& out, const char* type, const Bytes& data) {
     }
     add32(out, crc ^ 0xffffffff);
 }
-static void control(Bytes& out, uint32_t& sequence, UINT w, UINT h, BYTE blend) {
+static void control(Bytes& out, uint32_t& sequence, UINT w, UINT h, BYTE blend, unsigned delayMs) {
     Bytes data;
     for (uint32_t n : {sequence++, w, h, 0u, 0u}) add32(data, n);
-    data.insert(data.end(), {0, 10, 0, 100, 0, blend});
+    data.insert(data.end(), {BYTE(delayMs >> 8), BYTE(delayMs), 3, 232, 0, blend});
     chunk(out, "fcTL", data);
 }
 static void frameData(Bytes& out, uint32_t& sequence, const Bytes& png) {
@@ -179,7 +179,7 @@ static void frameData(Bytes& out, uint32_t& sequence, const Bytes& png) {
         chunk(out, "fdAT", data);
     }
 }
-static void generate(const std::wstring& coverPath, const std::vector<std::wstring>& hiddenPaths, const std::wstring& outputPath) {
+static void generate(const std::wstring& coverPath, const std::vector<std::wstring>& hiddenPaths, const std::wstring& outputPath, unsigned delayMs = 100) {
     if (_wcsicmp(fs::path(outputPath).extension().c_str(), L".png") != 0)
         throw std::runtime_error("Output filename must end in .png.");
     Com<IWICImagingFactory> factory;
@@ -195,15 +195,15 @@ static void generate(const std::wstring& coverPath, const std::vector<std::wstri
     chunk(out, "acTL", animation);
     chunk(out, "IDAT", pngData(factory.p, cover));
     uint32_t sequence = 0;
-    control(out, sequence, hidden.width, hidden.height, 0);
+    control(out, sequence, hidden.width, hidden.height, 0, delayMs);
     frameData(out, sequence, pngData(factory.p, hidden));
     for (size_t i = 1; i < hiddenPaths.size(); ++i) {
         auto next = fit(factory.p, load(factory.p, hiddenPaths[i]), hidden.width, hidden.height);
-        control(out, sequence, hidden.width, hidden.height, 0);
+        control(out, sequence, hidden.width, hidden.height, 0, delayMs);
         frameData(out, sequence, pngData(factory.p, next));
     }
     if (hiddenPaths.size() == 1) {
-        control(out, sequence, 1, 1, 1);
+        control(out, sequence, 1, 1, 1, delayMs);
         frameData(out, sequence, pngData(factory.p, Image{1, 1, Bytes(4, 0)}));
     }
     chunk(out, "IEND", {});
@@ -220,7 +220,15 @@ static void generate(const std::wstring& coverPath, const std::vector<std::wstri
     if (!ok || written != out.size()) throw std::runtime_error("Could not write the complete PNG file.");
 }
 
-static HWND inputs[3], statusLabel;
+static unsigned parseDelay(const std::wstring& value) {
+    if (value.empty() || value.size() > 5 || value.find_first_not_of(L"0123456789") != std::wstring::npos)
+        throw std::runtime_error("Frame duration must be an integer from 1 to 65535 ms.");
+    unsigned delay = static_cast<unsigned>(std::stoul(value));
+    if (delay < 1 || delay > 65535) throw std::runtime_error("Frame duration must be from 1 to 65535 ms.");
+    return delay;
+}
+
+static HWND inputs[3], statusLabel, durationInput;
 static std::vector<std::wstring> playbackPaths;
 static HFONT font, heading;
 static HINSTANCE instance;
@@ -315,8 +323,12 @@ static LRESULT CALLBACK windowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp) 
             control(window, L"BUTTON", i == 1 ? L"添加图片" : L"浏览…", WS_TABSTOP | BS_PUSHBUTTON, 100 + i, 625, y, 100, 32);
         }
         control(window, L"BUTTON", L"移除选中", WS_TABSTOP | BS_PUSHBUTTON, 103, 625, 210, 100, 32);
-        control(window, L"BUTTON", L"生成藏图", WS_TABSTOP | BS_DEFPUSHBUTTON, 110, 290, 390, 170, 38);
-        statusLabel = control(window, L"STATIC", L"按列表顺序循环播放，每张 100 ms；画布采用第一张播放图尺寸。", 0, 0, 24, 448, 710, 28);
+        control(window, L"STATIC", L"每张时长", 0, 0, 24, 385, 76, 24);
+        durationInput = control(window, L"EDIT", L"100", WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL, 203, 110, 380, 110, 32);
+        SendMessageW(durationInput, EM_SETLIMITTEXT, 5, 0);
+        control(window, L"STATIC", L"毫秒（1–65535；1000 毫秒 = 1 秒）", 0, 0, 235, 385, 450, 24);
+        control(window, L"BUTTON", L"生成藏图", WS_TABSTOP | BS_DEFPUSHBUTTON, 110, 290, 435, 170, 38);
+        statusLabel = control(window, L"STATIC", L"按列表顺序循环播放；画布采用第一张播放图尺寸。", 0, 0, 24, 495, 710, 28);
         return 0;
     }
     if (msg == WM_COMMAND) {
@@ -336,9 +348,15 @@ static LRESULT CALLBACK windowProc(HWND window, UINT msg, WPARAM wp, LPARAM lp) 
             if (paths[0].empty() || playbackPaths.empty() || paths[2].empty()) {
                 MessageBoxW(window, L"请选择封面图、至少一张播放图和保存位置。", L"信息不完整", MB_OK | MB_ICONERROR); return 0;
             }
+            unsigned delayMs;
+            try { delayMs = parseDelay(text(durationInput)); }
+            catch (const std::exception&) {
+                MessageBoxW(window, L"每张时长请输入 1–65535 的整数，单位为毫秒。", L"时长无效", MB_OK | MB_ICONERROR);
+                SetFocus(durationInput); return 0;
+            }
             SetWindowTextW(statusLabel, L"正在生成，请稍候…"); UpdateWindow(window); SetCursor(LoadCursorW(nullptr, IDC_WAIT));
             try {
-                generate(paths[0], playbackPaths, paths[2]);
+                generate(paths[0], playbackPaths, paths[2], delayMs);
                 SetWindowTextW(statusLabel, L"生成完成。");
                 MessageBoxW(window, (L"已保存到：\n" + paths[2]).c_str(), L"生成完成", MB_OK | MB_ICONINFORMATION);
             } catch (const std::exception& e) {
@@ -362,8 +380,11 @@ int WINAPI wWinMain(HINSTANCE module, HINSTANCE, PWSTR, int show) {
     if (argc != 1) {
         int code = 0;
         try {
-            if (argc < 4) throw std::runtime_error("Usage: QQ-APNG-Disguise-CPP.exe cover frame1 [frame2 ...] output.png");
-            generate(argv[1], std::vector<std::wstring>(argv + 2, argv + argc - 1), argv[argc - 1]);
+            int first = 1;
+            unsigned delayMs = 100;
+            if (argc > 2 && std::wstring(argv[1]) == L"--delay-ms") { delayMs = parseDelay(argv[2]); first = 3; }
+            if (argc - first < 3) throw std::runtime_error("Usage: QQ-APNG-Disguise-CPP.exe [--delay-ms 100] cover frame1 [frame2 ...] output.png");
+            generate(argv[first], std::vector<std::wstring>(argv + first + 1, argv + argc - 1), argv[argc - 1], delayMs);
         } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); code = 1; }
         LocalFree(argv); CoUninitialize(); return code;
     }
@@ -380,7 +401,7 @@ int WINAPI wWinMain(HINSTANCE module, HINSTANCE, PWSTR, int show) {
     cls.hIcon = LoadIconW(module, MAKEINTRESOURCEW(1)); cls.hIconSm = cls.hIcon;
     RegisterClassExW(&cls);
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT size{0, 0, px(750), px(495)}; AdjustWindowRect(&size, style, FALSE);
+    RECT size{0, 0, px(750), px(540)}; AdjustWindowRect(&size, style, FALSE);
     HWND window = CreateWindowExW(0, cls.lpszClassName, L"APNG 藏图工具 · C++", style, CW_USEDEFAULT, CW_USEDEFAULT,
         size.right - size.left, size.bottom - size.top, nullptr, nullptr, module, nullptr);
     if (!window) { DeleteObject(font); DeleteObject(heading); CoUninitialize(); return 1; }
